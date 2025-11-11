@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from joblib import Parallel, delayed
 from itertools import product
+from pandas.tseries.offsets import BDay
 
 # ---------------------------
 # Data fetching & prep [CELL]
@@ -44,6 +45,11 @@ def download_data(
     close_df = data["Close"].astype(float)
 
     return open_df, close_df
+
+
+# --------------------------------------------
+# Generate signals and hedge ratios [CELL]
+# --------------------------------------------
 
 
 # --------------------------------------------
@@ -87,18 +93,38 @@ def generate_signals_and_hedge_ratios(
 
     # Download warmup data based on start date of close_data,and prepend to close_data
     trading_start_date = close_data.index[0]
-    warmup_end_date = trading_start_date - timedelta(1)
-    warmup_start_date = warmup_end_date - timedelta(window_size)
+    warmup_end_date = trading_start_date - BDay(1)
+    warmup_start_date = warmup_end_date - timedelta(days=window_size * 2)
+
+    print("Downloading warmup data from", warmup_start_date, "to", warmup_end_date)
 
     warmup_data_open, warmup_data_close = download_data(
         tickers, warmup_start_date, warmup_end_date
     )
 
-    print("Warmup data downloaded from", warmup_start_date, "to", warmup_end_date)
-    print("Trading data starts from", trading_start_date)
-
+    print("Head of warmup data close:")
+    print(warmup_data_close.head())
     # Prepend to close_data
     close_data_with_warmup = pd.concat([warmup_data_close, close_data])
+    print(
+        "Start date for warmup data:",
+        warmup_data_close.index[0] if not warmup_data_close.empty else "N/A",
+    )
+    print(
+        "End date for warmup data:",
+        warmup_data_close.index[-1] if not warmup_data_close.empty else "N/A",
+    )
+    print(
+        "Start date for trading data:",
+        close_data.index[0] if not close_data.empty else "N/A",
+    )
+    print(
+        "End date for trading data:",
+        close_data.index[-1] if not close_data.empty else "N/A",
+    )
+
+    print("Close data with warmup starts from date:", close_data_with_warmup.index[0])
+    print("Trading data starts from date:", close_data.index[0])
 
     # Loop over all pairs of stocks
     for i, ticker_a in tqdm(enumerate(tickers), desc="Outer"):
@@ -115,19 +141,28 @@ def generate_signals_and_hedge_ratios(
             ]  # Use yesterday's closing price for stock B
 
             # Sliding window regression and cointegration test (using all available data up to current time point)
-            for t in tqdm(range(len(close_data)), desc="Time Loop"):
-                print(
-                    f"Processing pair: {ticker_a}, {ticker_b} at time index {t}, time {signals.index[t]}"
-                )
+            for current_date in tqdm(close_data.index, desc="Time Loop"):
+                print(f"Processing pair: {ticker_a}, {ticker_b} at time {current_date}")
+                # If current_date is not in signals index, skip
+                if current_date not in signals.index:
+                    continue
+
                 # Use all data from start to time t (sliding window) exclusive of t
-                y = data_a.iloc[t - window_size : t + 1]  # Dependent (stock A)
-                x = data_b.iloc[t - window_size : t + 1]  # Independent (stock B)
+                y = data_a.loc[:current_date].iloc[-window_size:]  # Dependent (stock A)
+                x = data_b.loc[:current_date].iloc[
+                    -window_size:
+                ]  # Independent (stock B)
+
+                # Skip if there's insufficient data ie yfinance doesn't have data for that date
+                print(f"Length of y: {len(y)}, Length of x: {len(x)}")
+                if len(y) != window_size or len(x) != window_size:
+                    continue
 
                 # Ensure index is valid for cointegration test
                 y_coint = y.iloc[:-1]
                 x_coint = x.iloc[:-1]
 
-                # Skip cointegration test if there's insufficient data (e.g., t < 2)
+                # Skip cointegration test if there's insufficient data
                 if len(y) <= 5 or len(x) <= 5:
                     continue  # Skip if not enough data for cointegration test
 
@@ -160,9 +195,9 @@ def generate_signals_and_hedge_ratios(
                 # Generate signal based on z-score and thresholds (1 for long, -1 for short, 0 for exit or no position)
                 pair_name = f"{ticker_a}_{ticker_b}"
                 if z_score < -entry_threshold:  # Long the spread
-                    signals.loc[signals.index[t], pair_name] = 1
+                    signals.loc[current_date, pair_name] = 1
                 elif z_score > entry_threshold:  # Short the spread
-                    signals.loc[signals.index[t], pair_name] = -1  #
+                    signals.loc[current_date, pair_name] = -1  #
                 elif abs(z_score) < exit_threshold:  # Exit signal
                     continue
                     # signals[pair_name].iloc[t] = 0  # Exit position
@@ -171,8 +206,7 @@ def generate_signals_and_hedge_ratios(
                     # signals[pair_name].iloc[t] = 0  # No action
 
                 # Store hedge ratio for the pair
-                hedge_ratios.loc[hedge_ratios.index[t], pair_name] = hedge_ratio
-
+                hedge_ratios.loc[current_date, pair_name] = hedge_ratio
     hedge_ratios = hedge_ratios.apply(lambda x: abs(x))
 
     return signals, hedge_ratios
