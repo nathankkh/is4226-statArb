@@ -94,6 +94,9 @@ def generate_signals_and_hedge_ratios(
         tickers, warmup_start_date, warmup_end_date
     )
 
+    print("Warmup data downloaded from", warmup_start_date, "to", warmup_end_date)
+    print("Trading data starts from", trading_start_date)
+
     # Prepend to close_data
     close_data_with_warmup = pd.concat([warmup_data_close, close_data])
 
@@ -112,7 +115,10 @@ def generate_signals_and_hedge_ratios(
             ]  # Use yesterday's closing price for stock B
 
             # Sliding window regression and cointegration test (using all available data up to current time point)
-            for t in tqdm(range(window_size, len(close_data)), desc="Time Loop"):
+            for t in tqdm(range(len(close_data)), desc="Time Loop"):
+                print(
+                    f"Processing pair: {ticker_a}, {ticker_b} at time index {t}, time {signals.index[t]}"
+                )
                 # Use all data from start to time t (sliding window) exclusive of t
                 y = data_a.iloc[t - window_size : t + 1]  # Dependent (stock A)
                 x = data_b.iloc[t - window_size : t + 1]  # Independent (stock B)
