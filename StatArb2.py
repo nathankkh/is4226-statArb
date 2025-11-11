@@ -113,38 +113,38 @@ def generate_signals_and_hedge_ratios(
 
             # Sliding window regression and cointegration test (using all available data up to current time point)
             for t in tqdm(range(window_size, len(close_data)), desc="Time Loop"):
-                # Use all data from start to time t (sliding window)
-                y = data_a.iloc[
-                    t - window_size : t + 1
-                ]  # Dependent variable (stock A), t+1 because iloc is exclusive
-                x = data_b.iloc[
-                    t - window_size : t + 1
-                ]  # Independent variable (stock B)
+                # Use all data from start to time t (sliding window) exclusive of t
+                y = data_a.iloc[t - window_size : t + 1]  # Dependent (stock A)
+                x = data_b.iloc[t - window_size : t + 1]  # Independent (stock B)
+
+                # Ensure index is valid for cointegration test
+                y_coint = y.iloc[:-1]
+                x_coint = x.iloc[:-1]
 
                 # Skip cointegration test if there's insufficient data (e.g., t < 2)
                 if len(y) <= 5 or len(x) <= 5:
                     continue  # Skip if not enough data for cointegration test
 
                 # Perform cointegration test
-                _, p_value, _ = st.coint(y, x)
+                _, p_value, _ = st.coint(y_coint, x_coint)
 
                 # Only proceed if the pair is cointegrated
                 if p_value >= coint_threshold:
                     continue  # Skip this pair if not cointegrated
 
                 # Add constant term to independent variable for regression
-                x = sm.add_constant(x)
+                x_coint = sm.add_constant(x_coint)
 
                 # Perform linear regression to get the hedge ratio (n)
-                model = sm.OLS(y, x).fit()
+                model = sm.OLS(y_coint, x_coint).fit()
                 hedge_ratio = model.params.iloc[
                     1
                 ]  # coefficient for stock B (slope coefficient)
 
                 # build spread series over the same expanding window
-                spread_series = y - hedge_ratio * x.iloc[:, 1]
+                spread_series = y - hedge_ratio * x
 
-                # since you want the window to match the expanding window (0..t), you don't need rolling:
+                # get mean and stddev of spread series
                 mu = spread_series.mean()
                 sd = spread_series.std(ddof=1)
 
@@ -154,13 +154,9 @@ def generate_signals_and_hedge_ratios(
                 # Generate signal based on z-score and thresholds (1 for long, -1 for short, 0 for exit or no position)
                 pair_name = f"{ticker_a}_{ticker_b}"
                 if z_score < -entry_threshold:  # Long the spread
-                    signals.loc[signals.index[t], pair_name] = (
-                        1  # Long stock A (underperforming)
-                    )
+                    signals.loc[signals.index[t], pair_name] = 1
                 elif z_score > entry_threshold:  # Short the spread
-                    signals.loc[signals.index[t], pair_name] = (
-                        -1
-                    )  # Short stock A (underperforming)
+                    signals.loc[signals.index[t], pair_name] = -1  #
                 elif abs(z_score) < exit_threshold:  # Exit signal
                     continue
                     # signals[pair_name].iloc[t] = 0  # Exit position
@@ -854,7 +850,9 @@ def plot_figures(
     axes = axes.flatten()  # Flatten the 2D array of axes to 1D for easy iteration
 
     # 1. Histogram of Strategy Returns
-    daily_returns = portfolio_value.pct_change().dropna() # Convert PnL to daily returns in % terms
+    daily_returns = (
+        portfolio_value.pct_change().dropna()
+    )  # Convert PnL to daily returns in % terms
     axes[0].hist(
         daily_returns, bins=30, alpha=0.75, color="blue", label="Strategy Returns"
     )
@@ -909,7 +907,9 @@ def plot_figures(
 
     # Plot cumulative returns and peak
     axes[2].plot(cumulative_returns, label="Cumulative Returns", color="blue")
-    axes[2].plot(peak, label="Cummax (Peak Cumulative Returns)", color="green", linestyle="--")
+    axes[2].plot(
+        peak, label="Cummax (Peak Cumulative Returns)", color="green", linestyle="--"
+    )
 
     # Fill the drawdown area
     axes[2].fill_between(
@@ -942,9 +942,11 @@ def plot_figures(
     plt.tight_layout()
     plt.show()
 
+
 # ----------------------------------
 # PARAM SEARCH PARALLELIZED [CELL]
 # ----------------------------------
+
 
 # Define param search with parallelization
 def param_search(
@@ -958,7 +960,7 @@ def param_search(
     n_jobs: int = -1,  # n_jobs: -1 will use all available cores
 ) -> pd.DataFrame:
     """
-    Performs parameter search over the given grid and returns performance metrics for each combination, 
+    Performs parameter search over the given grid and returns performance metrics for each combination,
     using parallel processing to speed up the search.
     """
     # Create all combinations of parameters
@@ -971,10 +973,10 @@ def param_search(
         signals, hedge_ratios = generate_signals_and_hedge_ratios(
             close_data,
             tickers,
-            entry_threshold=params['entry_threshold'],
-            exit_threshold=params['entry_threshold'],  # exit threshold same as entry
-            window_size=params['lookback_window'],
-            coint_threshold=params['p-value'],
+            entry_threshold=params["entry_threshold"],
+            exit_threshold=params["entry_threshold"],  # exit threshold same as entry
+            window_size=params["lookback_window"],
+            coint_threshold=params["p-value"],
         )
         hedge_ratios = hedge_ratios.apply(lambda x: abs(x))
 
@@ -994,24 +996,28 @@ def param_search(
         return tuple(params.items()), metrics
 
     # Parallelize the process using joblib's Parallel and delayed
-    results = Parallel(n_jobs=n_jobs)(delayed(process_param_combination)(params) for params in param_combinations)
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(process_param_combination)(params) for params in param_combinations
+    )
 
     # Convert results to dictionary
     results_dict = {k: v for k, v in results}
 
     # Convert results to DataFrame, sorted by Sharpe Ratio
-    results_df = pd.DataFrame.from_dict(results_dict, orient='index')
+    results_df = pd.DataFrame.from_dict(results_dict, orient="index")
     results_df = results_df.sort_values("Sharpe Ratio", ascending=False)
     results_df = results_df.reset_index()
     return results_df
+
 
 # ----------------------------------
 # RUN BACKTEST (Call functions)
 # ----------------------------------
 
+
 def run_backtest(
     start_date: str,
-    end_date:str, 
+    end_date: str,
     tickers: List[str],
     cash: float = 500_000,
     transaction_cost_pct: float = 0.0,
@@ -1020,7 +1026,6 @@ def run_backtest(
     exit_threshold: float = 1.0,
     coint_threshold: float = 0.05,
     coint_window: int = 60,
-    
 ):
     # 1. Download Data
     close_data, open_data = download_data(tickers, start_date, end_date)
@@ -1059,14 +1064,15 @@ def run_backtest(
     plot_figures(pnl_series, benchmark_ticker="SPY", tickers=tickers, cash=cash)
 
     return performance_metrics
-    
+
+
 # --------------------------------------------
 # Find best parameters via param search [CELL]
 # --------------------------------------------
 params = {
-    'entry_threshold': [0.8, 1.0, 1.5, 2.0],
-    'lookback_window': [60, 90, 120],
-    'p-value': [0.05, 0.1],
+    "entry_threshold": [0.8, 1.0, 1.5, 2.0],
+    "lookback_window": [60, 90, 120],
+    "p-value": [0.05, 0.1],
 }
 
 tickers = [
@@ -1098,10 +1104,8 @@ coint_window = 60
 open_train_data, close_train_data = download_data(
     tickers, start_train_date, end_train_date
 )
-open_test_data, close_test_data = download_data(
-    tickers, start_test_date, end_test_date
-)
-    
+open_test_data, close_test_data = download_data(tickers, start_test_date, end_test_date)
+
 results_df = param_search(
     params,
     close_train_data,
@@ -1120,10 +1124,16 @@ results_df = param_search(
 
 # Get best params from train set
 best_params = results_df.iloc[0]
-entry_threshold = best_params['entry_threshold']
-exit_threshold = best_params['entry_threshold']  # exit same as entry
-coint_threshold = best_params['p-value']
-coint_window = best_params['lookback_window']
+best_params = {
+    "entry_threshold": float(best_params["entry_threshold"]),
+    "lookback_window": int(best_params["lookback_window"]),
+    "p-value": float(best_params["p-value"]),
+}
+
+entry_threshold = best_params["entry_threshold"]
+exit_threshold = best_params["entry_threshold"]  # exit same as entry
+coint_threshold = best_params["p-value"]
+coint_window = best_params["lookback_window"]
 print("Best Parameters from Training Set:")
 print(best_params)
 
@@ -1169,7 +1179,7 @@ for metric, value in results_test.items():
 # --------------------------------------------
 
 # -----------------------------------
-# FOR PROF TO CHANGE 
+# FOR PROF TO CHANGE
 tickers = [
     "NVDA",
     "MSFT",
