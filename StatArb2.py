@@ -1018,7 +1018,6 @@ def param_search(
             window_size=params["lookback_window"],
             coint_threshold=params["p-value"],
         )
-        hedge_ratios = hedge_ratios.apply(lambda x: abs(x))
 
         pnl_series, _ = calculate_pnl_from_signals_and_hedge_ratios(
             signals,
@@ -1096,9 +1095,6 @@ def run_backtest(
     performance_metrics = get_performance_metrics(
         pnl_series, benchmark_ticker="SPY", cash=cash
     )
-    print("Performance Metrics:")
-    for metric, value in performance_metrics.items():
-        print(f"{metric}: {value}")
 
     # 5. Plot Figures
     plot_figures(pnl_series, benchmark_ticker="SPY", tickers=tickers, cash=cash)
