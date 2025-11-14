@@ -162,10 +162,6 @@ def generate_signals_and_hedge_ratios(
                 y_coint = y.iloc[:-1]
                 x_coint = x.iloc[:-1]
 
-                # Skip cointegration test if there's insufficient data
-                if len(y) <= 5 or len(x) <= 5:
-                    continue  # Skip if not enough data for cointegration test
-
                 # Perform cointegration test
                 _, p_value, _ = st.coint(y_coint, x_coint)
 
